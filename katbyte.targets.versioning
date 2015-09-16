@@ -92,96 +92,125 @@
                     }
                 };
 
+                //holds cmd result
+                string result;
 
                 //varibles to contain the bits we are extracting
                 string branch;
                 string revs;
+                string vtag = VersionBase.Trim().Replace(".*", ".x");
                 string tag;
                 string hash;
                 string hashShort;
                 string status;
 
-
-                //check if we are in a repository
-                p.StartInfo.Arguments = "status";
-                p.Start();
-                string result = p.StandardOutput.ReadToEnd();
-                p.WaitForExit();
-                p.Refresh();
-
-                if (result.Contains("Not a git repository")) {
-                    throw new Exception("Not a git repository");
-                }
-
-
-                //TODO: clean up & add better error messages (suggestions etc)
-
-
-                //get branch
+                
+                //see if git is installed and available
+                bool hasgit = true;
                 try {
-                    p.StartInfo.Arguments = "rev-parse --abbrev-ref HEAD";
+                    p.StartInfo.Arguments = "status";
                     p.Start();
-                    branch = p.StandardOutput.ReadToEnd().Trim().Split('.')[0];
+                    result = p.StandardOutput.ReadToEnd();
                     p.WaitForExit();
                     p.Refresh();
                 } catch (Exception ex) {
-                    Log.LogError("GenerateAssemblyVersion: Failed to execute: git rev-parse --abbrev-ref HEAD");
-                    Log.LogError(p.StandardError.ReadToEnd().Trim());
-                    throw ex;
+                    if ( ! ex.Message.Contains("The system cannot find the file specified")) {
+                        throw ex; //incase theres another error
+                    }
+                    hasgit = false;
                 }
-
-                //get hash
-                try {
-                    p.StartInfo.Arguments = "rev-parse HEAD";
+                
+                if (!hasgit) {
+                    branch      = "?";
+                    revs        = "0";
+                    tag         = vtag;
+                    hashShort   = "????????";
+                    
+                    Log.LogWarning("Can not properly calculate version, git can not be located.");
+                    
+                } else {
+                    //check if we are in a repository
+                    p.StartInfo.Arguments = "status";
                     p.Start();
-                    hash = p.StandardOutput.ReadToEnd().Trim();
+                    result = p.StandardOutput.ReadToEnd();
                     p.WaitForExit();
                     p.Refresh();
-                    hashShort = hash.Substring(0, 8);
-                } catch (Exception ex) {
-                    Log.LogError("GenerateAssemblyVersion: Failed to execute: git rev-parse HEAD");
-                    Log.LogError(p.StandardError.ReadToEnd().Trim());
-                    throw ex;
+
+                    if (result.Contains("Not a git repository")) {
+                        throw new Exception("Not a git repository");
+                    }
+
+
+                    //TODO: clean up & add better error messages (suggestions etc)
+
+
+                    //get branch
+                    try {
+                        p.StartInfo.Arguments = "rev-parse --abbrev-ref HEAD";
+                        p.Start();
+                        branch = p.StandardOutput.ReadToEnd().Trim().Split('.')[0];
+                        p.WaitForExit();
+                        p.Refresh();
+                    } catch (Exception ex) {
+                        Log.LogError("GenerateAssemblyVersion: Failed to execute: git rev-parse --abbrev-ref HEAD");
+                        Log.LogError(p.StandardError.ReadToEnd().Trim());
+                        throw ex;
+                    }
+
+                    //get hash
+                    try {
+                        p.StartInfo.Arguments = "rev-parse HEAD";
+                        p.Start();
+                        hash = p.StandardOutput.ReadToEnd().Trim();
+                        p.WaitForExit();
+                        p.Refresh();
+                        hashShort = hash.Substring(0, 8);
+                    } catch (Exception ex) {
+                        Log.LogError("GenerateAssemblyVersion: Failed to execute: git rev-parse HEAD");
+                        Log.LogError(p.StandardError.ReadToEnd().Trim());
+                        throw ex;
+                    }
+
+                    //find version tag & revs
+                    try {
+                        p.StartInfo.Arguments              = "describe --tags --long --match " + vtag;
+                        p.Start();
+                        string describe = p.StandardOutput.ReadToEnd().Trim();
+                        p.WaitForExit();
+
+                        var describeBits = describe.Split('-');
+
+                        tag = describeBits[0];
+                        
+                        // +1 so revs starts at 1 not 0
+                        revs = "" + (Int32.Parse(describeBits[1])+1);
+                        
+                    } catch (Exception ex) {
+                        Log.LogError("GenerateAssemblyVersion: Failed to execute: git describe --tags --long --match " + vtag);
+                        Log.LogError(p.StandardError.ReadToEnd().Trim());
+                        throw ex;
+                    }
+
+                    //sanity check
+                    if ( ! vtag.Equals(tag.Trim())) {
+                        throw new Exception("verison template (" + vtag +") does not match tag (" + tag + ")");
+                    }
+
+                    //get status (uncommited changes or clean)
+                    //leaving out for now
+                    /*try {
+                        p.StartInfo.Arguments              = "status --porcelain";
+                        p.Start();
+                        string porcelain = p.StandardOutput.ReadToEnd().Trim();
+                        p.WaitForExit();
+
+                        status = porcelain.Replace(Environment.NewLine, string.Empty).Trim().Length == 0  ? "" : "   (DIRTY)";
+                    } catch (Exception ex) {
+                        Log.LogError("GenerateAssemblyVersion: Failed to execute: git status --porcelain");
+                        Log.LogError(p.StandardError.ReadToEnd().Trim());
+                        throw ex;
+                    }*/
                 }
-
-                //find version tag & revs
-                string vtag = VersionBase.Trim().Replace(".*", ".x");
-                try {
-                    p.StartInfo.Arguments              = "describe --tags --long --match " + vtag;
-                    p.Start();
-                    string describe = p.StandardOutput.ReadToEnd().Trim();
-                    p.WaitForExit();
-
-                    var describeBits = describe.Split('-');
-
-                    tag = describeBits[0];
-                    revs = describeBits[1];
-                } catch (Exception ex) {
-                    Log.LogError("GenerateAssemblyVersion: Failed to execute: git describe --tags --long --match " + vtag);
-                    Log.LogError(p.StandardError.ReadToEnd().Trim());
-                    throw ex;
-                }
-
-                //sanity check
-                if ( ! vtag.Equals(tag.Trim())) {
-                    throw new Exception("verison template (" + vtag +") does not match tag (" + tag + ")");
-                }
-
-                //get status (uncommited changes or clean)
-                //leaving out for now
-                /*try {
-                    p.StartInfo.Arguments              = "status --porcelain";
-                    p.Start();
-                    string porcelain = p.StandardOutput.ReadToEnd().Trim();
-                    p.WaitForExit();
-
-                    status = porcelain.Replace(Environment.NewLine, string.Empty).Trim().Length == 0  ? "" : "   (DIRTY)";
-                } catch (Exception ex) {
-                    Log.LogError("GenerateAssemblyVersion: Failed to execute: git status --porcelain");
-                    Log.LogError(p.StandardError.ReadToEnd().Trim());
-                    throw ex;
-                }*/
-
 
                 string fileVersion   = vtag.Replace("x", revs).Trim();
                 string version       = versionRevs ? fileVersion : vtag.Replace("x", ""+0).Trim();
@@ -191,6 +220,9 @@
                 var output = Template.Replace("%%VERSION%%", version).Replace("%%FILEVERSION%%", fileVersion).Replace("%%INFORMATIONAL%%", informational);
                 File.WriteAllText(Destination, output);
 
+                //display version to build output
+                Log.LogMessage(MessageImportance.High, "$(AssemblyName) v" + informational);
+                
             ]]></Code>
         </Task>
     </UsingTask>
@@ -234,7 +266,7 @@ using System.Reflection;
 
     <!-- target to clean up the generated AssemblyVersion.cs file-->
     <Target Name="AssemblyVersionCleanup" >
-
+        <Message Text="$(AssemblyName) removing properties\AssemblyVersion.cs" Importance="high"/>
         <PropertyGroup>
             <Destination>$(MSBuildProjectDirectory)\properties\AssemblyVersion.cs</Destination>
         </PropertyGroup>
