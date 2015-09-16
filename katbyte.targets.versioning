@@ -1,0 +1,245 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright © 2014 kt@katbyte.me -->
+<!-- katbyte c# project git versioning system -->
+<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+    <!--
+        This simple 1.2.3.4 versioning system for git that works as follows:
+
+            a base version, 1.0.7.x or 1.0.7.* is specified in .version file
+                This is what the current base version is where x|* is replaced by the number of revisions from 1.0.7.0 on
+                x means the revisions will only appear in the FileVersion attribute where
+                * means the revisions will appear in both the Version and FileVersion attributes
+
+                This defaults to a .version file in the git directory
+                VersionLocation can be set in the csproj file to override this location
+
+            The repository is tagged
+                the repository has tags specifying where each version begins in the format of 1.0.7.x
+                revisions are counted from this tag
+
+            AssemblyVersion.Template.cs
+                This file is the template used to generate the AssemblyVersion.cs file that can be included in the project
+
+            AssemblyVersion.cs
+                This file is generated and put into the properties folder and when included it sets the following properties
+                Using 1.0.7.x as an example:
+
+                    AssemblyVersion                 : 1.0.7.0  (or 1.0.7.77 if 1.0.7.* is used)
+                    AssemblyFileVersion             : 1.0.7.77
+                    AssemblyInformationalVersion    : 1.0.7.77 branch - FF00FF00 (where FF00FF00 is the short commit hash)
+
+
+        ### CAUTION ###
+            With multiple branches it is possible to get the same version.
+            Please be aware version numbers are not guaranteed to be unique.
+    -->
+
+
+    <!-- insert into build and clean steps -->
+    <PropertyGroup>
+
+        <BuildDependsOn>
+            AssemblyVersion;
+            $(BuildDependsOn);
+        </BuildDependsOn>
+
+        <CleanDependsOn>
+            $(CleanDependsOn);
+            AssemblyVersionCleanup;
+        </CleanDependsOn>
+
+    </PropertyGroup>
+
+
+    <!-- define a task to get required information from git -->
+    <UsingTask TaskName="GenerateAssemblyVersion" TaskFactory="CodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.v4.0.dll">
+        <ParameterGroup>
+            <VersionBase    ParameterType="System.String" Required="true" />
+            <Template       ParameterType="System.String" Required="true" />
+            <Destination    ParameterType="System.String" Required="true" />
+        </ParameterGroup>
+
+        <Task>
+            <Using Namespace="System"/>
+            <Using Namespace="System.Diagnostics"/>
+            <Code Type="Fragment" Language="cs"><![CDATA[
+                //Log.LogMessage(MessageImportance.High, "high Message");
+                //Log.LogWarning("Warning");
+                //Log.LogWarning("Error");
+
+
+                //check version base format and determin the .x vs .*
+                bool versionRevs = false;
+                if (VersionBase.EndsWith(".x")) {
+                } else if (VersionBase.EndsWith(".*")) {
+                    versionRevs = true;
+                } else {
+                    throw new Exception("VersionBase is in a bad format: " + VersionBase);
+                }
+
+
+                //Configure a process to call git with
+                Process p = new Process {
+                    StartInfo = {
+                        WorkingDirectory       = ".",
+                        UseShellExecute        = false,
+                        CreateNoWindow         = true,
+                        WindowStyle            = ProcessWindowStyle.Hidden,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError  = true,
+                        FileName               = "git"
+                    }
+                };
+
+
+                //varibles to contain the bits we are extracting
+                string branch;
+                string revs;
+                string tag;
+                string hash;
+                string hashShort;
+                string status;
+
+
+                //check if we are in a repository
+                p.StartInfo.Arguments = "status";
+                p.Start();
+                string result = p.StandardOutput.ReadToEnd();
+                p.WaitForExit();
+                p.Refresh();
+
+                if (result.Contains("Not a git repository")) {
+                    throw new Exception("Not a git repository");
+                }
+
+
+                //TODO: clean up & add better error messages (suggestions etc)
+
+
+                //get branch
+                try {
+                    p.StartInfo.Arguments = "rev-parse --abbrev-ref HEAD";
+                    p.Start();
+                    branch = p.StandardOutput.ReadToEnd().Trim().Split('.')[0];
+                    p.WaitForExit();
+                    p.Refresh();
+                } catch (Exception ex) {
+                    Log.LogError("GenerateAssemblyVersion: Failed to execute: git rev-parse --abbrev-ref HEAD");
+                    Log.LogError(p.StandardError.ReadToEnd().Trim());
+                    throw ex;
+                }
+
+                //get hash
+                try {
+                    p.StartInfo.Arguments = "rev-parse HEAD";
+                    p.Start();
+                    hash = p.StandardOutput.ReadToEnd().Trim();
+                    p.WaitForExit();
+                    p.Refresh();
+                    hashShort = hash.Substring(0, 8);
+                } catch (Exception ex) {
+                    Log.LogError("GenerateAssemblyVersion: Failed to execute: git rev-parse HEAD");
+                    Log.LogError(p.StandardError.ReadToEnd().Trim());
+                    throw ex;
+                }
+
+                //find version tag & revs
+                string vtag = VersionBase.Trim().Replace(".*", ".x");
+                try {
+                    p.StartInfo.Arguments              = "describe --tags --long --match " + vtag;
+                    p.Start();
+                    string describe = p.StandardOutput.ReadToEnd().Trim();
+                    p.WaitForExit();
+
+                    var describeBits = describe.Split('-');
+
+                    tag = describeBits[0];
+                    revs = describeBits[1];
+                } catch (Exception ex) {
+                    Log.LogError("GenerateAssemblyVersion: Failed to execute: git describe --tags --long --match " + vtag);
+                    Log.LogError(p.StandardError.ReadToEnd().Trim());
+                    throw ex;
+                }
+
+                //sanity check
+                if ( ! vtag.Equals(tag.Trim())) {
+                    throw new Exception("verison template (" + vtag +") does not match tag (" + tag + ")");
+                }
+
+                //get status (uncommited changes or clean)
+                //leaving out for now
+                /*try {
+                    p.StartInfo.Arguments              = "status --porcelain";
+                    p.Start();
+                    string porcelain = p.StandardOutput.ReadToEnd().Trim();
+                    p.WaitForExit();
+
+                    status = porcelain.Replace(Environment.NewLine, string.Empty).Trim().Length == 0  ? "" : "   (DIRTY)";
+                } catch (Exception ex) {
+                    Log.LogError("GenerateAssemblyVersion: Failed to execute: git status --porcelain");
+                    Log.LogError(p.StandardError.ReadToEnd().Trim());
+                    throw ex;
+                }*/
+
+
+                string fileVersion   = vtag.Replace("x", revs).Trim();
+                string version       = versionRevs ? fileVersion : vtag.Replace("x", ""+0).Trim();
+                string informational = fileVersion + " @ " + branch + " (" + hashShort +")" ;
+
+
+                var output = Template.Replace("%%VERSION%%", version).Replace("%%FILEVERSION%%", fileVersion).Replace("%%INFORMATIONAL%%", informational);
+                File.WriteAllText(Destination, output);
+
+            ]]></Code>
+        </Task>
+    </UsingTask>
+
+
+
+    <!-- target to generate AssemblyVersion.cs -->
+    <Target Name="AssemblyVersion">
+        <PropertyGroup>
+
+            <!-- default to searching the current projects directory -->
+            <VersionLocation Condition=" '$(VersionLocation)' == '' ">$(MSBuildProjectDirectory)\.version </VersionLocation>
+
+            <!-- get base version -->
+            <VersionBase>$([System.IO.File]::ReadAllText(`$(VersionLocation)`))</VersionBase>
+
+            <!-- define the AssemblyVersion.cs template -->
+            <Template>
+using System.Reflection;
+
+//Version used by c# CLR to locate, link and load assemblies.
+// ### CAUTION ###
+//       If changed assemblies referencing this assembly will have to be rebuilt.
+[assembly: AssemblyVersion("%%VERSION%%")]
+
+//Version used by windows and displayed by the file system
+[assembly: AssemblyFileVersion("%%FILEVERSION%%")]
+
+//Can be anything, product detail ie RC1, or additional information on the build such as git commit hash
+[assembly: AssemblyInformationalVersion("%%INFORMATIONAL%%")]
+            </Template>
+
+        </PropertyGroup>
+
+        <!-- query git -->
+        <GenerateAssemblyVersion VersionBase="$(VersionBase)" Template = "$(Template)" Destination="$(MSBuildProjectDirectory)\properties\AssemblyVersion.cs"/>
+
+    </Target>
+
+
+
+    <!-- target to clean up the generated AssemblyVersion.cs file-->
+    <Target Name="AssemblyVersionCleanup" >
+
+        <PropertyGroup>
+            <Destination>$(MSBuildProjectDirectory)\properties\AssemblyVersion.cs</Destination>
+        </PropertyGroup>
+
+        <Delete Files="$(Destination)" />
+    </Target>
+
+</Project>
